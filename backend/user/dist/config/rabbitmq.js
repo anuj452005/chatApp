@@ -16,7 +16,7 @@ const connectRabbitMQ = async () => {
             password: process.env.Rabbitmq_Password,
         });
         channel = await connection.createChannel();
-        console.log("✅ connected  to rabbitmq");
+        console.log("✅ connected to rabbitmq");
     }
     catch (error) {
         console.log("Failed to connect to rabbitmq", error);
