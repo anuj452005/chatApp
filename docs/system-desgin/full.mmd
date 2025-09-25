@@ -1,0 +1,56 @@
+sequenceDiagram
+    autonumber
+    participant Client as Client
+    participant Gateway as API_Gateway
+    participant UserSvc as User_Service
+    participant LB as Load_Balancer
+    participant Socket as Socket_Server
+    participant Redis as Redis
+    participant DB as MongoDB
+    participant Worker as Worker
+    participant Recipient as Recipient_Client
+
+    %% 1) Login (HTTP)
+    Client->>Gateway: POST /login {credentials}
+    Gateway->>UserSvc: validate credentials
+    UserSvc->>DB: query users collection
+    DB-->>UserSvc: user record
+    UserSvc-->>Gateway: 200 {accessToken}
+    Gateway-->>Client: 200 {accessToken, set-refresh-cookie}
+
+    %% 2) WebSocket handshake (auth in handshake)
+    Client->>LB: WSS /socket.io (auth: Bearer <accessToken>)
+    LB->>Socket: forward handshake
+    Socket->>UserSvc: validate token / fetch user info
+    UserSvc-->>Socket: user info (id, claims)
+    Socket->>Redis: SET user:{userId}:online = socketId
+    Socket-->>Client: 101 Switching Protocols
+
+    %% 3) Send message (optimistic client -> server)
+    Client->>Socket: message:create {chatId, clientMsgId, body}
+    Socket->>DB: insert message {chatId, clientMsgId, from, body, status: "sent"}
+    DB-->>Socket: message persisted (messageId)
+    Socket->>Redis: PUBLISH user:{recipientId} {messageId, chatId}
+
+    alt Recipient is online
+        %% Redis adapter routes to the right Socket server instance
+        Redis->>Socket: deliver pubsub -> appropriate instance
+        Socket->>Recipient: push message:receive {messageId, chatId, body}
+        Recipient->>Socket: ack message:received {messageId}
+        Socket->>DB: update message.status = "delivered"
+        Socket->>Client: ack to sender {messageId, status: "delivered"}
+    else Recipient is offline
+        Socket->>DB: keep message.status = "sent" (pending)
+        Socket->>Worker: enqueue push-notification job {recipientId, messageId}
+        Worker->>Worker: send push via FCM/APNs (or enqueue email/job)
+    end
+
+    %% 4) Recipient later connects -> receive pending messages
+    Recipient->>LB: WSS /socket.io (auth)
+    LB->>Socket: forward handshake
+    Socket->>UserSvc: validate token
+    Socket->>Redis: SET user:{recipientId}:online = socketId
+    Socket->>DB: query pending messages (status != "delivered" for chats)
+    DB-->>Socket: pending messages list
+    Socket->>Recipient: send pending messages
+    Recipient->>Socket: ack & optionally emit read receipts

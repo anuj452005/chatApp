@@ -1,0 +1,78 @@
+flowchart LR
+    %% Nodes
+    subgraph Client[Client - NextJS]
+        UI[Pages & Components]
+    end
+
+    subgraph Gateway[API Gateway / NextJS Routes]
+        NG[NextJS Route Handlers]
+    end
+
+    subgraph UserService[User Service]
+        USAPI[Express API]
+        USMQ[RabbitMQ Producer]
+        USDB[(MongoDB Users)]
+    end
+
+    subgraph MailService[Mail Service]
+        MSConsumer[RabbitMQ Consumer]
+        MSEmail[NodeMailer]
+    end
+
+    subgraph ChatService[Chat Service]
+        CSAPI[Express API]
+        CSSocket[Socket.io Server]
+        CSDB[(MongoDB Chats/Messages)]
+    end
+
+    subgraph Infra[Shared Infra]
+        MQ[(RabbitMQ)]
+        REDIS[(Redis)]
+    end
+
+    %% Client interactions
+    UI -->|Login Signup Verify OTP HTTP| NG
+    UI <-->|WebSocket| CSSocket
+    UI -->|Profile Chat pages HTTP| NG
+
+    %% Gateway to services
+    NG -->|api user HTTP| USAPI
+    NG -->|api chat HTTP| CSAPI
+
+    %% User Service internals
+    USAPI --> USDB
+    USAPI -->|Generate Store OTP EX 300s| REDIS
+    USAPI -->|Rate limit EX 60s| REDIS
+    USAPI -->|Publish send-otp| USMQ
+    USMQ --> MQ
+
+    %% Mail Service
+    MQ --> MSConsumer
+    MSConsumer -->|Send email| MSEmail
+
+    %% Chat Service internals
+    CSAPI --> CSDB
+    CSSocket --> CSDB
+
+    %% Cross-service infra usage
+    CSAPI -->|optional cache| REDIS
+
+    %% Auth flow
+    UI -.->|Bearer JWT| NG
+    NG -.->|Forward JWT| USAPI
+
+    %% WebSocket auth
+    UI -.->|JWT during handshake| CSSocket
+
+    %% Legends
+    classDef http stroke:#2b6cb0,stroke-width:2px;
+    classDef ws stroke:#38a169,stroke-width:2px;
+    classDef amqp stroke:#d69e2e,stroke-width:2px;
+    classDef db fill:#1a202c,color:#fff,stroke:#4a5568;
+
+    %% Style links
+    linkStyle 0,2,3 stroke:#2b6cb0,stroke-width:2px;
+    linkStyle 1 stroke:#38a169,stroke-width:2px;
+    linkStyle 4,5 stroke:#2b6cb0,stroke-width:2px;
+    linkStyle 9 stroke:#d69e2e,stroke-width:2px;
+    linkStyle 10 stroke:#d69e2e,stroke-width:2px;

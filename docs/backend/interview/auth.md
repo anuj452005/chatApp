@@ -2,6 +2,8 @@
 
 ---
 
+> See overall system HLD: `docs/backend/interview/hld.mmd` (open in Mermaid-enabled viewer)
+
 ## Redis-Related Interview Questions
 
 ### 1. Q: Why did you choose Redis for OTP storage and rate limiting?

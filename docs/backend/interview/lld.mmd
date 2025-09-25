@@ -1,0 +1,184 @@
+flowchart LR
+    %% Low-Level Design (LLD) for Microservice Chat System
+
+    %% Client
+    subgraph Client[Client - NextJS]
+        UI[Pages: login, verify, profile, chat]
+        UI -->|HTTP fetch| NG
+        UI <-->|Socket.io| CSSocket
+    end
+
+    %% API Gateway / Next Route Handlers
+    subgraph Gateway[API Gateway / NextJS Route Handlers]
+        NG[Route Handlers: /api/user/*, /api/chat/*]
+        NG -.->|Attach Authorization: Bearer JWT| Headers
+    end
+
+    %% USER SERVICE
+    subgraph UserService[User Service - Express]
+        USIndex[index.ts -> Express app]
+
+        subgraph USRoutes[Routes]
+            USR1_SIGNUP[POST /api/user/signup]
+            USR2_LOGIN[POST /api/user/login]
+            USR3_VERIFY[POST /api/user/verify-otp]
+            USR4_ME[GET /api/user/me]
+        end
+
+        subgraph USMiddleware[Middlewares]
+            USMW1[isAuth.ts - verify JWT]
+            USMW2[TryCatch.ts - error wrapper]
+        end
+
+        subgraph USControllers[Controllers]
+            USC1[signup]
+            USC2[login]
+            USC3[verifyOtp]
+            USC4[getProfile]
+        end
+
+        subgraph USConfig[Config]
+            USCFG1[db.ts - connect Mongo]
+            USCFG2[generateToken.ts - sign JWT]
+            USCFG3[rabbitmq.ts - producer]
+            USCFG4[TryCatch.ts]
+        end
+
+        subgraph UserDB[MongoDB]
+            USCOL1[(users: _id, name, email, passwordHash, createdAt)]
+        end
+
+        subgraph USRedis[Redis Keys]
+            USREDIS1[(otp: email -> 6-digit, EX 300s)]
+            USREDIS2[(rate_limit: ip -> counter, EX 60s)]
+        end
+
+        subgraph USAMQP[RabbitMQ]
+            USEX[exchange: mail.topic]
+            USRK[routing key: send-otp]
+            USMSG[payload: email, otp]
+        end
+
+        USIndex --> USRoutes
+        USR1_SIGNUP --> USC1
+        USR2_LOGIN --> USC2
+        USR3_VERIFY --> USC3
+        USR4_ME -->|USMW1| USC4
+        USC1 --> USCOL1
+        USC2 --> USCOL1
+        USC3 --> USREDIS1
+        USC1 -->|Publish send-otp| USAMQP
+        USC2 -->|rate limit check| USREDIS2
+        USC3 -->|compare OTP| USREDIS1
+        USC2 -->|issue JWT| USCFG2
+        click USR1_SIGNUP "../user/src/routes/user.ts" _blank
+        click USR2_LOGIN "../user/src/routes/user.ts" _blank
+        click USR3_VERIFY "../user/src/routes/user.ts" _blank
+        click USR4_ME "../user/src/routes/user.ts" _blank
+    end
+
+    %% MAIL SERVICE
+    subgraph MailService[Mail Service]
+        MSIndex[index.ts -> connect MQ]
+        MSConsumer[consumer.ts -> subscribe queue: send-otp]
+        MSNodeMailer[NodeMailer transporter]
+        MSIndex --> MSConsumer --> MSNodeMailer
+        MSConsumer -->|on message: email, otp| MSNodeMailer
+        click MSConsumer "../mail/src/consumer.ts" _blank
+    end
+
+    %% CHAT SERVICE
+    subgraph ChatService[Chat Service - Express + Socket.io]
+        CSIndex[index.ts -> Express + Socket.io]
+
+        subgraph CSRoutes[Routes]
+            CSR1_GET_ROOMS[GET /api/chat/rooms]
+            CSR2_CREATE_ROOM[POST /api/chat/rooms]
+            CSR3_GET_MESSAGES[GET /api/chat/messages/:roomId]
+            CSR4_SEND_MESSAGE[POST /api/chat/messages]
+            CSR5_UPLOAD[POST /api/chat/upload]
+        end
+
+        subgraph CSMW[Middlewares]
+            CSMW1[isAuth.ts - verify JWT]
+            CSMW2[multer.ts - file uploads]
+            CSMW3[TryCatch.ts]
+        end
+
+        subgraph CSControllers[Controllers]
+            CSC1[listRooms]
+            CSC2[createRoom]
+            CSC3[listMessages]
+            CSC4[createMessage]
+            CSC5[uploadMedia]
+        end
+
+        subgraph CSSocket[Socket.io Server]
+            CSE1_CONNECTION["connection"]
+            CSE2_JOIN_ROOM["join_room (roomId)"]
+            CSE3_SEND_MESSAGE["send_message (roomId, text, media?)"]
+            CSE4_TYPING["typing (roomId)"]
+            CSE5_MESSAGE_DELIVERED["message_delivered (messageId)"]
+            CSSAuth[Handshake JWT verify]
+        end
+
+        subgraph ChatDB[MongoDB]
+            CSCol1[(chats: _id, name, participants, createdAt)]
+            CSCol2[(messages: _id, roomId, senderId, text, mediaUrl, createdAt)]
+        end
+
+        subgraph CSCloud[Cloudinary]
+            CSCLOUD1[upload image/video -> url]
+        end
+
+        CSIndex --> CSRoutes
+        CSR1_GET_ROOMS -->|CSMW1| CSC1 --> CSCol1
+        CSR2_CREATE_ROOM -->|CSMW1| CSC2 --> CSCol1
+        CSR3_GET_MESSAGES -->|CSMW1| CSC3 --> CSCol2
+        CSR4_SEND_MESSAGE -->|CSMW1| CSC4 --> CSCol2
+        CSR5_UPLOAD -->|CSMW1, CSMW2| CSC5 --> CSCloud --> CSC4
+        CSSocket --> CSSAuth
+        CSE2_JOIN_ROOM -->|socket_join_roomId| CSSocket
+        CSE3_SEND_MESSAGE -->|persist| CSCol2
+        CSE3_SEND_MESSAGE -->|emit to room| CSSocket
+        CSE4_TYPING -->|broadcast typing| CSSocket
+        CSE5_MESSAGE_DELIVERED -->|update ack| CSCol2
+        click CSRoutes "../chat/src/routes/chat.ts" _blank
+        click CSSocket "../chat/src/config/socket.ts" _blank
+        click CSControllers "../chat/src/controllers/chat.ts" _blank
+    end
+
+    %% INFRA
+    subgraph Infra[Shared Infra]
+        MQ[(RabbitMQ)]
+        REDIS[(Redis)]
+        MONGO[(MongoDB Cluster)]
+    end
+
+    %% Connections between services and infra
+    USCOL1 --- MONGO
+    CSCol1 --- MONGO
+    CSCol2 --- MONGO
+    USREDIS1 --- REDIS
+    USREDIS2 --- REDIS
+    CSSocket -.->|optional cache| REDIS
+    USEX --- MQ
+    MSConsumer --- MQ
+
+    %% Auth details
+    Headers -.->|Authorization: Bearer <jwt>| USMW1
+    Headers -.->|Authorization: Bearer <jwt>| CSMW1
+    CSSAuth -.->|query.token / auth header| JWTVerify[verify & attach userId]
+
+    %% Styles & Legends
+    classDef http stroke:#2b6cb0,stroke-width:2px;
+    classDef ws stroke:#38a169,stroke-width:2px;
+    classDef amqp stroke:#d69e2e,stroke-width:2px;
+    classDef db fill:#1a202c,color:#fff,stroke:#4a5568;
+    classDef cache fill:#553c9a,color:#fff,stroke:#6b46c1;
+
+    class USRoutes,CSRoutes,NG http
+    class CSSocket ws
+    class USAMQP,MSConsumer amqp
+    class USCOL1,CSCol1,CSCol2,MONGO db
+    class USREDIS1,USREDIS2,REDIS cache
